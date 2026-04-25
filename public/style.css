@@ -46,3 +46,33 @@ a.donate {
   text-decoration: none;
 }
 a.donate:hover { background: #f0b73a; text-decoration: none; }
+
+body[data-theme="duke"] {
+  background: #0a0a0a;
+  color: #ffaa00;
+  font-family: "Courier New", "Lucida Console", monospace;
+}
+body[data-theme="duke"] h1 {
+  color: #ff2200;
+  text-shadow: 0 0 8px #ff5500, 0 0 18px #aa1100;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+body[data-theme="duke"] h2 a { color: #ffaa00; }
+body[data-theme="duke"] .intro { color: #ddaa00; }
+body[data-theme="duke"] .source-note { color: #886600; }
+body[data-theme="duke"] .source-note a { color: #ff8800; }
+body[data-theme="duke"] #generated { color: #886600; }
+body[data-theme="duke"] .empty { color: #aa7700; }
+body[data-theme="duke"] .entry { border-bottom-color: #331100; }
+body[data-theme="duke"] .entry .meta { color: #aa7700; }
+body[data-theme="duke"] .entry a { color: #ffaa00; }
+body[data-theme="duke"] .entry a:hover { color: #ff5500; }
+body[data-theme="duke"] .duke-tagline {
+  color: #ff2200;
+  font-weight: bold;
+  text-shadow: 0 0 6px #ff5500;
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+}
