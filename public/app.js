@@ -4,14 +4,33 @@ const POLL_MS = 60_000;
 const fmtDate = (utc) => new Date(utc * 1000).toLocaleString();
 const escapeHTML = (s) =>
   s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const escapeAttr = (s) =>
+  s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-function linkify(body, imgurLinks) {
-  const set = new Set(imgurLinks);
-  return escapeHTML(body).replace(/https?:\/\/[^\s)]+/g, (url) => {
-    const clean = url.replace(/[).,]+$/, "");
-    if (set.has(clean)) return `<a href="${clean}" target="_blank" rel="noopener">${clean}</a>`;
-    return url;
-  });
+function linkify(body) {
+  // Single pass: match markdown [text](url) OR a bare URL, walk the body
+  // emitting escaped text between matches and an <a> tag for each match.
+  const re = /\[([^\]]+)\]\(([^)\s]+)\)|https?:\/\/[^\s\])]+/g;
+  const out = [];
+  let i = 0;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    out.push(escapeHTML(body.slice(i, m.index)));
+    let text, url;
+    if (m[1] !== undefined) {
+      text = m[1];
+      url = m[2].replace(/[).,]+$/, "");
+    } else {
+      url = m[0].replace(/[).,]+$/, "");
+      text = url;
+    }
+    out.push(
+      `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">${escapeHTML(text)}</a>`
+    );
+    i = m.index + m[0].length;
+  }
+  out.push(escapeHTML(body.slice(i)));
+  return out.join("");
 }
 
 function renderEntry(e) {
@@ -22,7 +41,7 @@ function renderEntry(e) {
       <strong>${escapeHTML(e.author)}</strong> · ${fmtDate(e.created_utc)} ·
       <a href="${e.permalink}" target="_blank" rel="noopener">on reddit</a>
     </div>
-    <div class="body">${linkify(e.body, e.links)}</div>
+    <div class="body">${linkify(e.body)}</div>
   `;
   return div;
 }
