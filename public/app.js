@@ -53,7 +53,10 @@ async function refresh() {
     const summary = document.createElement("p");
     summary.className = "empty";
     const reported = t.total_comments_reported ?? "?";
-    summary.textContent = `${t.entries.length} imgur posts in ${t.total_comments_loaded} / ${reported} comments.`;
+    const backlog = t.backfill_pending
+      ? ` · ${t.backfill_pending} backfill batches still queued`
+      : "";
+    summary.textContent = `${t.entries.length} imgur posts · ${t.total_comments_loaded} / ${reported} comments scanned${backlog}.`;
     section.appendChild(summary);
     for (const e of t.entries) section.appendChild(renderEntry(e));
     root.appendChild(section);

@@ -2,8 +2,10 @@ const REDDIT_BASE = "https://www.reddit.com";
 const UA = "strongman-imgur-cf/1.0 (+https://github.com/akotzias/strongman-imgur)";
 const IMGUR_RE = /https?:\/\/(?:i\.|m\.)?imgur\.com\/[A-Za-z0-9./?=#&_-]+/gi;
 const MORECHILDREN_BATCH = 100;
-const KV_KEY = "data";
+const STATE_KEY = "state";
+const DATA_KEY = "data";
 const THREADS_URL = "https://akotzias.github.io/strongman-imgur/threads.json";
+const TIME_BUDGET_MS = 25_000;
 
 const cors = {
   "access-control-allow-origin": "*",
@@ -12,106 +14,194 @@ const cors = {
 
 async function fetchJSON(url) {
   const res = await fetch(url, { headers: { "user-agent": UA }, cf: { cacheTtl: 0 } });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url.slice(0, 80)}`);
   return res.json();
 }
 
-function collectInto(listing, comments, moreQueue) {
+function extractLinks(body) {
+  if (!body) return null;
+  const found = body.match(IMGUR_RE);
+  if (!found || !found.length) return null;
+  return [...new Set(found.map((u) => u.replace(/[).,]+$/, "")))];
+}
+
+function entryFromComment(c) {
+  const links = extractLinks(c.body);
+  if (!links) return null;
+  return {
+    id: c.id,
+    author: c.author,
+    created_utc: c.created_utc,
+    permalink: `https://www.reddit.com${c.permalink}`,
+    body: c.body,
+    links,
+  };
+}
+
+function walkListing(listing, seenSet, onComment, onMore) {
   if (!listing || listing.kind !== "Listing") return;
   for (const c of listing.data.children) {
     if (c.kind === "t1") {
-      comments.push(c.data);
-      if (c.data.replies) collectInto(c.data.replies, comments, moreQueue);
+      if (!seenSet.has(c.data.id)) {
+        seenSet.add(c.data.id);
+        onComment(c.data);
+      }
+      if (c.data.replies) walkListing(c.data.replies, seenSet, onComment, onMore);
     } else if (c.kind === "more") {
-      if (c.data.children?.length) moreQueue.push({ kind: "ids", ids: [...c.data.children] });
-      else if (c.data.parent_id) moreQueue.push({ kind: "continue", parentId: c.data.parent_id });
+      if (c.data.children?.length) onMore({ kind: "ids", ids: [...c.data.children] });
+      else if (c.data.parent_id) onMore({ kind: "continue", parentId: c.data.parent_id });
     }
   }
 }
 
-async function fetchAllComments(threadId) {
-  const data = await fetchJSON(`${REDDIT_BASE}/comments/${threadId}.json?raw_json=1&limit=500`);
-  const totalReported = data[0]?.data?.children?.[0]?.data?.num_comments ?? null;
-
-  const comments = [];
-  const moreQueue = [];
-  collectInto(data[1], comments, moreQueue);
-
-  while (moreQueue.length) {
-    const item = moreQueue.shift();
-    try {
-      const things = [];
-      if (item.kind === "ids") {
-        for (let j = 0; j < item.ids.length; j += MORECHILDREN_BATCH) {
-          const slice = item.ids.slice(j, j + MORECHILDREN_BATCH);
-          const u =
-            `${REDDIT_BASE}/api/morechildren.json?api_type=json&raw_json=1` +
-            `&link_id=t3_${threadId}&children=${slice.join(",")}`;
-          const j2 = await fetchJSON(u);
-          things.push(...(j2.json?.data?.things || []));
-        }
-      } else if (item.kind === "continue") {
-        const parentBase = item.parentId.replace(/^t1_/, "");
-        const u = `${REDDIT_BASE}/comments/${threadId}/_/${parentBase}.json?raw_json=1&limit=500`;
-        const j2 = await fetchJSON(u);
-        const root = j2[1]?.data?.children?.[0];
-        if (root?.kind === "t1") {
-          comments.push(root.data);
-          if (root.data.replies) collectInto(root.data.replies, comments, moreQueue);
-        }
+function processThings(things, seenSet, onComment, onMore) {
+  for (const t of things) {
+    if (t.kind === "t1") {
+      if (!seenSet.has(t.data.id)) {
+        seenSet.add(t.data.id);
+        onComment(t.data);
       }
-      for (const t of things) {
-        if (t.kind === "t1") {
-          comments.push(t.data);
-          if (t.data.replies) collectInto(t.data.replies, comments, moreQueue);
-        } else if (t.kind === "more") {
-          if (t.data.children?.length) moreQueue.push({ kind: "ids", ids: [...t.data.children] });
-          else if (t.data.parent_id) moreQueue.push({ kind: "continue", parentId: t.data.parent_id });
+      if (t.data.replies) walkListing(t.data.replies, seenSet, onComment, onMore);
+    } else if (t.kind === "more") {
+      if (t.data.children?.length) onMore({ kind: "ids", ids: [...t.data.children] });
+      else if (t.data.parent_id) onMore({ kind: "continue", parentId: t.data.parent_id });
+    }
+  }
+}
+
+async function fetchListing(threadId, sort) {
+  const sortParam = sort ? `&sort=${sort}` : "";
+  const data = await fetchJSON(
+    `${REDDIT_BASE}/comments/${threadId}.json?raw_json=1&limit=500${sortParam}`
+  );
+  return {
+    listing: data[1],
+    totalReported: data[0]?.data?.children?.[0]?.data?.num_comments ?? null,
+  };
+}
+
+async function expandIds(threadId, ids) {
+  const things = [];
+  for (let j = 0; j < ids.length; j += MORECHILDREN_BATCH) {
+    const slice = ids.slice(j, j + MORECHILDREN_BATCH);
+    const u =
+      `${REDDIT_BASE}/api/morechildren.json?api_type=json&raw_json=1` +
+      `&link_id=t3_${threadId}&children=${slice.join(",")}`;
+    const j2 = await fetchJSON(u);
+    things.push(...(j2.json?.data?.things || []));
+  }
+  return things;
+}
+
+async function expandContinue(threadId, parentId) {
+  const parentBase = parentId.replace(/^t1_/, "");
+  const u = `${REDDIT_BASE}/comments/${threadId}/_/${parentBase}.json?raw_json=1&limit=500`;
+  const j2 = await fetchJSON(u);
+  const root = j2[1]?.data?.children?.[0];
+  if (!root || root.kind !== "t1") return null;
+  return root;
+}
+
+async function tickThread(threadConfig, threadState, deadlineMs) {
+  const { id } = threadConfig;
+  const seen = new Set(threadState.seen_ids || []);
+  const entriesById = new Map((threadState.entries || []).map((e) => [e.id, e]));
+  const queue = threadState.expansion_queue ? [...threadState.expansion_queue] : [];
+  let totalReported = threadState.total_comments_reported ?? null;
+  const isFirstRun = seen.size === 0;
+
+  const onComment = (c) => {
+    const e = entryFromComment(c);
+    if (e) entriesById.set(e.id, e);
+  };
+  const onMore = (m) => queue.push(m);
+
+  try {
+    const { listing, totalReported: nr } = await fetchListing(
+      id,
+      isFirstRun ? null : "new"
+    );
+    if (nr !== null) totalReported = nr;
+    walkListing(listing, seen, onComment, onMore);
+  } catch (e) {
+    console.warn(`listing ${id} failed: ${e.message}`);
+  }
+
+  while (queue.length && Date.now() < deadlineMs) {
+    const item = queue.shift();
+    try {
+      if (item.kind === "ids") {
+        const things = await expandIds(id, item.ids);
+        processThings(things, seen, onComment, onMore);
+      } else if (item.kind === "continue") {
+        const root = await expandContinue(id, item.parentId);
+        if (root) {
+          if (!seen.has(root.data.id)) {
+            seen.add(root.data.id);
+            onComment(root.data);
+          }
+          if (root.data.replies) walkListing(root.data.replies, seen, onComment, onMore);
         }
       }
     } catch (e) {
-      console.warn("expand failed", e.message);
+      console.warn(`expand ${id} failed: ${e.message}`);
+      queue.unshift(item);
+      break;
     }
   }
 
-  const byId = new Map();
-  for (const c of comments) byId.set(c.id, c);
-  return { comments: [...byId.values()], totalReported };
+  const entries = [...entriesById.values()].sort(
+    (a, b) => a.created_utc - b.created_utc
+  );
+  return {
+    seen_ids: [...seen],
+    entries,
+    expansion_queue: queue,
+    total_comments_reported: totalReported,
+    last_tick_utc: Math.floor(Date.now() / 1000),
+  };
 }
 
-function extractEntries(comments) {
-  const entries = [];
-  for (const c of comments) {
-    if (!c.body) continue;
-    const found = c.body.match(IMGUR_RE) || [];
-    if (!found.length) continue;
-    const links = [...new Set(found.map((u) => u.replace(/[).,]+$/, "")))];
-    entries.push({
-      author: c.author,
-      created_utc: c.created_utc,
-      permalink: `https://www.reddit.com${c.permalink}`,
-      body: c.body,
-      links,
-    });
-  }
-  entries.sort((a, b) => a.created_utc - b.created_utc);
-  return entries;
-}
+async function tick(env) {
+  const threadConfigs = await fetchJSON(THREADS_URL);
+  const stateRaw = await env.IMGUR_KV.get(STATE_KEY);
+  const state = stateRaw ? JSON.parse(stateRaw) : { threads: {} };
+  const start = Date.now();
+  const n = Math.max(threadConfigs.length, 1);
 
-async function rebuild() {
-  const threads = await fetchJSON(THREADS_URL);
-  const out = { generated_at: new Date().toISOString(), threads: [] };
-  for (const t of threads) {
-    const { comments, totalReported } = await fetchAllComments(t.id);
-    const entries = extractEntries(comments);
-    out.threads.push({
-      ...t,
-      total_comments_loaded: comments.length,
-      total_comments_reported: totalReported,
-      entries,
-    });
+  for (let i = 0; i < threadConfigs.length; i++) {
+    const tc = threadConfigs[i];
+    const prior = state.threads[tc.id] || {
+      seen_ids: [],
+      entries: [],
+      expansion_queue: [],
+      total_comments_reported: null,
+    };
+    const deadline = start + (TIME_BUDGET_MS * (i + 1)) / n;
+    state.threads[tc.id] = await tickThread(tc, prior, deadline);
   }
-  return out;
+
+  state.generated_at = new Date().toISOString();
+
+  const dataView = {
+    generated_at: state.generated_at,
+    threads: threadConfigs.map((tc) => {
+      const s = state.threads[tc.id];
+      return {
+        id: tc.id,
+        title: tc.title,
+        url: tc.url,
+        total_comments_loaded: s.seen_ids.length,
+        total_comments_reported: s.total_comments_reported,
+        backfill_pending: s.expansion_queue.length,
+        entries: s.entries,
+      };
+    }),
+  };
+
+  await env.IMGUR_KV.put(STATE_KEY, JSON.stringify(state));
+  await env.IMGUR_KV.put(DATA_KEY, JSON.stringify(dataView));
+  return dataView;
 }
 
 export default {
@@ -120,12 +210,12 @@ export default {
     if (req.method === "OPTIONS") return new Response(null, { headers: cors });
 
     if (url.pathname === "/data.json") {
-      const cached = await env.IMGUR_KV.get(KV_KEY);
+      const cached = await env.IMGUR_KV.get(DATA_KEY);
       if (!cached) {
-        return new Response(JSON.stringify({ error: "no data yet — wait for cron or hit /trigger" }), {
-          status: 503,
-          headers: { "content-type": "application/json", ...cors },
-        });
+        return new Response(
+          JSON.stringify({ error: "no data yet — wait for cron or hit /trigger" }),
+          { status: 503, headers: { "content-type": "application/json", ...cors } }
+        );
       }
       return new Response(cached, {
         headers: {
@@ -137,18 +227,38 @@ export default {
     }
 
     if (url.pathname === "/trigger") {
-      const data = await rebuild();
-      await env.IMGUR_KV.put(KV_KEY, JSON.stringify(data));
-      return new Response(JSON.stringify({ ok: true, generated_at: data.generated_at, threads: data.threads.map(t => ({ id: t.id, entries: t.entries.length, loaded: t.total_comments_loaded })) }), {
+      const data = await tick(env);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          generated_at: data.generated_at,
+          threads: data.threads.map((t) => ({
+            id: t.id,
+            entries: t.entries.length,
+            loaded: t.total_comments_loaded,
+            reported: t.total_comments_reported,
+            backfill_pending: t.backfill_pending,
+          })),
+        }),
+        { headers: { "content-type": "application/json", ...cors } }
+      );
+    }
+
+    if (url.pathname === "/reset") {
+      await env.IMGUR_KV.delete(STATE_KEY);
+      await env.IMGUR_KV.delete(DATA_KEY);
+      return new Response(JSON.stringify({ ok: true }), {
         headers: { "content-type": "application/json", ...cors },
       });
     }
 
-    return new Response("strongman-imgur worker — see /data.json", { headers: cors });
+    return new Response(
+      "strongman-imgur worker — see /data.json, /trigger, /reset",
+      { headers: cors }
+    );
   },
 
   async scheduled(_event, env, _ctx) {
-    const data = await rebuild();
-    await env.IMGUR_KV.put(KV_KEY, JSON.stringify(data));
+    await tick(env);
   },
 };
