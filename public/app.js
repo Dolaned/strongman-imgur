@@ -66,8 +66,7 @@ async function refresh() {
   }
   const data = await res.json();
   generated.textContent =
-    `Last server update: ${new Date(data.generated_at).toLocaleString()} · ` +
-    `reload the page to refresh.`;
+    `Last server update: ${new Date(data.generated_at).toLocaleString()}`;
 
   root.innerHTML = "";
   for (const t of data.threads) {
