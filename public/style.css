@@ -32,7 +32,7 @@ h2 { margin: 2rem 0 0.5rem; font-size: 1.15rem; }
 .source-note a { color: #0079d3; text-decoration: none; }
 .source-note a:hover { text-decoration: underline; }
 .donate-wrap {
-  margin-top: 2.5rem;
+  margin: 1rem 0 1.5rem;
   text-align: center;
 }
 a.donate {
