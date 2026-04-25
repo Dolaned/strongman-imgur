@@ -1,6 +1,10 @@
 # strongman-imgur
 
-Static site that lists every Reddit comment containing an imgur link from a curated set of threads. Fetching happens **client-side in the visitor's browser** (Reddit blocks GitHub Actions runner IPs), so the data is always live and refreshes every 60 seconds.
+Static site that lists every Reddit comment containing an imgur link from a curated set of threads.
+
+**Live:** https://akotzias.github.io/strongman-imgur/
+
+Fetching happens **client-side in the visitor's browser** (Reddit returns 403 to GitHub Actions runner IPs), so the data is always live and the page auto-refreshes every 60 seconds while open.
 
 ## Layout
 
@@ -25,8 +29,12 @@ The `id` is the alphanumeric segment after `/comments/` in the URL. Push to `mai
 
 ## Local
 
-Open `public/index.html` directly in a browser, or:
-
 ```sh
 python3 -m http.server -d public 8080
 ```
+
+Then open http://localhost:8080. (Opening `public/index.html` via `file://` won't work — `fetch()` blocks `file://` origins.)
+
+## Deploy
+
+Pushing to `main` triggers `.github/workflows/update.yml`, which uploads `public/` to GitHub Pages. Pages source is set to "GitHub Actions" (configured once via `gh api -X POST repos/akotzias/strongman-imgur/pages -f build_type=workflow`).
