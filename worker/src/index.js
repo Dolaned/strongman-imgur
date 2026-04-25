@@ -226,6 +226,23 @@ export default {
       });
     }
 
+    if (url.pathname === "/state.json") {
+      const raw = await env.IMGUR_KV.get(STATE_KEY);
+      if (!raw) {
+        return new Response(JSON.stringify({ error: "no state yet" }), {
+          status: 503,
+          headers: { "content-type": "application/json", ...cors },
+        });
+      }
+      return new Response(raw, {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "public, max-age=30",
+          ...cors,
+        },
+      });
+    }
+
     if (url.pathname === "/trigger") {
       const data = await tick(env);
       return new Response(
@@ -253,7 +270,7 @@ export default {
     }
 
     return new Response(
-      "strongman-imgur worker — see /data.json, /trigger, /reset",
+      "strongman-imgur worker — see /data.json, /state.json, /trigger, /reset",
       { headers: cors }
     );
   },

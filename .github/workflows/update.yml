@@ -3,6 +3,9 @@ name: Deploy site
 on:
   push:
     branches: [main]
+    paths:
+      - "public/**"
+      - ".github/workflows/update.yml"
   workflow_dispatch:
 
 permissions:

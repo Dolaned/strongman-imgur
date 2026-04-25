@@ -1,0 +1,41 @@
+name: Backup worker state
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: backup-state
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and pretty-print state
+        run: |
+          mkdir -p backups
+          curl -fsSL --max-time 60 \
+            https://strongman-imgur.akotzias-dev.workers.dev/state.json \
+            -o backups/state.raw.json
+          node -e 'const fs=require("fs"); const d=JSON.parse(fs.readFileSync("backups/state.raw.json","utf8")); fs.writeFileSync("backups/state.json", JSON.stringify(d,null,2));'
+          rm backups/state.raw.json
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet backups/state.json 2>/dev/null && [ -f backups/state.json ]; then
+            echo "no change"
+            exit 0
+          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add backups/state.json
+          git diff --cached --quiet && { echo "nothing staged"; exit 0; }
+          git commit -m "Backup worker state $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
