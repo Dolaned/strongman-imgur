@@ -1,0 +1,24 @@
+name: Probe Reddit hosts
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try every Reddit host variant
+        run: |
+          set +e
+          ID=1st43jg
+          UA="strongman-imgur/1.0 (probe; +https://github.com/akotzias/strongman-imgur)"
+          for host in www.reddit.com old.reddit.com np.reddit.com i.reddit.com m.reddit.com api.reddit.com; do
+            for path in "/comments/$ID.json?raw_json=1&limit=5" "/r/StrongmanHQ/comments/$ID/.json?raw_json=1&limit=5"; do
+              url="https://$host$path"
+              code=$(curl -sS -o /tmp/body -w "%{http_code}" -A "$UA" "$url")
+              size=$(wc -c < /tmp/body | tr -d ' ')
+              snippet=$(head -c 80 /tmp/body | tr '\n' ' ')
+              echo "[$code] size=$size $url"
+              echo "  body: $snippet"
+            done
+          done
