@@ -1,0 +1,10 @@
+{
+  "name": "strongman-imgur",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "serve": "node --watch scripts/build.js & python3 -m http.server -d public 8080"
+  }
+}
