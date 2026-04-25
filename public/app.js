@@ -38,9 +38,9 @@ function scanStatus(t) {
   const fmt = (x) => x.toLocaleString();
   if (t.backfill_pending && t.total_comments_reported) {
     const pct = Math.round((t.total_comments_loaded / t.total_comments_reported) * 100);
-    return `${n} ${noun} · scan ${pct}% complete (${fmt(t.total_comments_loaded)} / ${fmt(t.total_comments_reported)} comments) — older comments may still be missing.`;
+    return `${n} ${noun} · ${pct}% scanned (${fmt(t.total_comments_loaded)} out of ${fmt(t.total_comments_reported)} comments) — older comments may still be missing.`;
   }
-  return `${n} ${noun} · scan complete (${fmt(t.total_comments_loaded)} comments).`;
+  return `${n} ${noun} · all ${fmt(t.total_comments_loaded)} comments scanned.`;
 }
 
 function renderEntry(e) {

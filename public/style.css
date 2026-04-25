@@ -20,6 +20,10 @@ h2 { margin: 2rem 0 0.5rem; font-size: 1.15rem; }
 .entry .links { margin-top: 0.25rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .entry .links a { font-size: 0.85rem; background: #eef3f8; padding: 0.15rem 0.45rem; border-radius: 4px; }
 .empty { color: #6b7785; font-style: italic; }
+.intro {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
 .source-note {
   color: #6b7785;
   font-size: 0.85rem;
