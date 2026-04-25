@@ -1,0 +1,14 @@
+name = "strongman-imgur"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# Cron tick — Cloudflare free plan supports down to 1 minute, but Reddit
+# rate limits make 5 minutes a sensible default.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# KV namespace ID gets pasted in here after running:
+#   wrangler kv namespace create IMGUR_KV
+[[kv_namespaces]]
+binding = "IMGUR_KV"
+id = "8dbddb7408e543828a0fad2ff2e99339"
