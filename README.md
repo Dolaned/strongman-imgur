@@ -7,22 +7,49 @@ Static site that lists every Reddit comment containing an imgur link from a cura
 ## Architecture
 
 ```
-threads.json  ──►  Cloudflare Worker  ──►  Workers KV  ──►  GitHub Pages site
-                   (cron every 5 min)      (data + state)    (polls every 60s)
-                            ▲                    │
-                            │                    ▼
-                            │             /state.json
-                            │                    │
-                       wrangler            hourly GH Action
-                       restore             commits backups/state.json
+                                        Reddit JSON API (anonymous, ~10 req/min)
+                                                     ▲
+                                                     │ once every 5 min
+                                                     │ (cron only)
+                                                     │
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │                       Cloudflare Worker                                │
+   │  ┌─────────────────┐    ┌────────────────────────┐    ┌─────────────┐  │
+   │  │ scheduled tick  │ ─► │  Workers KV            │ ◄─ │ GET /data.  │  │
+   │  │ (cron */5 * *)  │    │  • state (full)        │    │ json        │  │
+   │  │  fetch + expand │    │  • data  (page-facing) │    │ reads cache │  │
+   │  └─────────────────┘    └────────────────────────┘    └─────────────┘  │
+   └────────────────────────────────────────────────────────────────────────┘
+                                                     ▲
+                                cache-control: max-age=290 (Cloudflare edge)
+                                                     │
+   ┌─────────────────────────────────────────┐       │
+   │      GitHub Pages site (public/)        │ ──────┘
+   │      fetch once on page load            │   ↑ first viewer per region
+   │      no polling — reload to refresh     │     warms the edge cache;
+   └─────────────────────────────────────────┘     everyone else hits cache
+                       ▲
+                       │ visitors
+
+   ┌──────────────────────────────────────┐
+   │  Hourly GitHub Action                │ ─► curl /state.json
+   │  .github/workflows/backup-state.yml  │ ─► commit backups/state.json
+   └──────────────────────────────────────┘
 ```
 
-Four moving parts:
+Five things to know:
 
-1. **GitHub Pages site** (`public/`) — a static page that fetches `data.json` from the Worker and renders the entries. No build step; deployed via `.github/workflows/update.yml` on every push.
-2. **Cloudflare Worker** (`worker/`) — runs a 5-minute cron, scrapes Reddit, stores results in KV, serves them as a CORS-enabled JSON endpoint.
-3. **Workers KV** — Cloudflare's edge key-value store; this is where the data actually lives between cron ticks.
-4. **Hourly state backup** (`.github/workflows/backup-state.yml`) — pulls the Worker's `/state.json`, commits `backups/state.json` so the full state survives even if KV is wiped.
+1. **GitHub Pages site** (`public/`) — a static page. On load, it does **one** `fetch('/data.json')` — no polling. Visitors must reload to see updates.
+2. **Cloudflare Worker** (`worker/`) — runs a `*/5 * * * *` cron. The cron is the **only** thing that talks to Reddit; HTTP requests to the Worker never trigger Reddit calls.
+3. **Workers KV** — durable edge key-value store. Holds `state` (internal) and `data` (page-facing). State persists across cron ticks; that's how we accumulate scan coverage on huge threads.
+4. **Cloudflare edge cache** — `/data.json` is served with `cache-control: public, max-age=290, s-maxage=290`. Cloudflare's edge in each PoP caches the response for ~5 min. The Worker is invoked at most **once per region per cron interval**, regardless of audience size. Sharing the page widely costs effectively nothing.
+5. **Hourly state backup** — a GitHub Action pulls `/state.json` and commits `backups/state.json` so the full state survives even if KV is wiped.
+
+### Why this shape
+
+- Reddit blocks GitHub Actions runner IPs (HTTP 403). Cloudflare's IPs aren't blocked, so the cron has to live there.
+- Reddit's anonymous rate limit (~10 req/min) means we have to budget Reddit calls carefully. Decoupling page traffic from Reddit traffic via KV + edge cache lets the page absorb arbitrary load while Reddit only ever sees the cron.
+- Persistent state in KV means we converge to full coverage over many cron ticks instead of having to fit a 4,300-comment scan into a single 30-second window.
 
 ### Why a Worker (and not just GitHub Actions)
 
