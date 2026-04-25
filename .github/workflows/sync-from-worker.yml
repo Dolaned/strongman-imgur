@@ -1,0 +1,44 @@
+name: Sync from Worker
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-from-worker
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull and pretty-print data.json + state.json
+        run: |
+          set -e
+          mkdir -p public backups
+          curl -fsSL --max-time 60 \
+            https://strongman-imgur.akotzias-dev.workers.dev/data.json \
+            -o public/.data.raw
+          curl -fsSL --max-time 60 \
+            https://strongman-imgur.akotzias-dev.workers.dev/state.json \
+            -o backups/.state.raw
+          node -e 'const fs=require("fs"); for (const [src,dst] of [["public/.data.raw","public/data.json"],["backups/.state.raw","backups/state.json"]]) { fs.writeFileSync(dst, JSON.stringify(JSON.parse(fs.readFileSync(src,"utf8")), null, 2)); }'
+          rm public/.data.raw backups/.state.raw
+
+      - name: Commit if changed
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add public/data.json backups/state.json
+          if git diff --cached --quiet; then
+            echo "no change"
+            exit 0
+          fi
+          git commit -m "Sync $(date -u +%Y-%m-%dT%H:%MZ) from Worker"
+          git push

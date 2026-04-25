@@ -1,4 +1,4 @@
-const WORKER_URL = "https://strongman-imgur.akotzias-dev.workers.dev/data.json";
+const DATA_URL = "./data.json";
 
 const fmtDate = (utc) => new Date(utc * 1000).toLocaleString();
 const escapeHTML = (s) =>
@@ -48,13 +48,9 @@ function renderEntry(e) {
 async function refresh() {
   const root = document.getElementById("threads");
   const generated = document.getElementById("generated");
-  const res = await fetch(WORKER_URL);
+  const res = await fetch(DATA_URL);
   if (!res.ok) {
-    if (res.status === 503) {
-      generated.textContent = "Worker is warming up — retrying in 60s.";
-    } else {
-      generated.textContent = `Worker error: ${res.status} ${res.statusText}`;
-    }
+    generated.textContent = `Couldn't load data.json (${res.status} ${res.statusText}).`;
     return;
   }
   const data = await res.json();

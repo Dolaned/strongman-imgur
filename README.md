@@ -7,64 +7,54 @@ Static site that lists every Reddit comment containing an imgur link from a cura
 ## Architecture
 
 ```
-                                        Reddit JSON API (anonymous, ~10 req/min)
+                                          Reddit JSON API (anonymous, ~10 req/min)
                                                      ▲
                                                      │ once every 5 min
                                                      │ (cron only)
                                                      │
-   ┌────────────────────────────────────────────────────────────────────────┐
-   │                       Cloudflare Worker                                │
-   │  ┌─────────────────┐    ┌────────────────────────┐    ┌─────────────┐  │
-   │  │ scheduled tick  │ ─► │  Workers KV            │ ◄─ │ GET /data.  │  │
-   │  │ (cron */5 * *)  │    │  • state (full)        │    │ json        │  │
-   │  │  fetch + expand │    │  • data  (page-facing) │    │ reads cache │  │
-   │  └─────────────────┘    └────────────────────────┘    └─────────────┘  │
-   └────────────────────────────────────────────────────────────────────────┘
-                                                     ▲
-                                cache-control: max-age=290 (Cloudflare edge)
-                                                     │
-   ┌─────────────────────────────────────────┐       │
-   │      GitHub Pages site (public/)        │ ──────┘
-   │      fetch once on page load            │   ↑ first viewer per region
-   │      no polling — reload to refresh     │     warms the edge cache;
-   └─────────────────────────────────────────┘     everyone else hits cache
-                       ▲
-                       │ visitors
-
-   ┌──────────────────────────────────────┐
-   │  Hourly GitHub Action                │ ─► curl /state.json
-   │  .github/workflows/backup-state.yml  │ ─► commit backups/state.json
-   └──────────────────────────────────────┘
+   ┌────────────────────────────────────────────────────────────────────────────┐
+   │                       Cloudflare Worker                                    │
+   │  ┌─────────────────┐    ┌────────────────────────┐    ┌─────────────────┐  │
+   │  │ scheduled tick  │ ─► │  Workers KV            │ ◄─ │ GET /data.json  │  │
+   │  │ (cron */5 * *)  │    │  • state (full)        │    │ GET /state.json │  │
+   │  │  fetch + expand │    │  • data  (page-facing) │    └─────────────────┘  │
+   │  └─────────────────┘    └────────────────────────┘             ▲           │
+   └────────────────────────────────────────────────────────────────│───────────┘
+                                                                    │
+                                                  ┌─────────────────┴───────────┐
+                                                  │  Sync GitHub Action          │
+                                                  │  .github/workflows/          │
+                                                  │     sync-from-worker.yml     │
+                                                  │  every 5 min                 │
+                                                  │  → public/data.json (commit) │
+                                                  │  → backups/state.json (commit)│
+                                                  └──────────────────────────────┘
+                                                                    │
+                                                                    ▼
+                                                    triggers Deploy site workflow
+                                                                    │
+                                                                    ▼
+   ┌─────────────────────────────────────────┐    ┌──────────────────────────────┐
+   │      Visitor                            │ ─► │  GitHub Pages                │
+   │      one fetch on load,                 │    │  serves public/* incl.       │
+   │      no polling (reload to refresh)     │ ◄─ │  data.json (committed file)  │
+   └─────────────────────────────────────────┘    └──────────────────────────────┘
 ```
 
 Five things to know:
 
-1. **GitHub Pages site** (`public/`) — a static page. On load, it does **one** `fetch('/data.json')` — no polling. Visitors must reload to see updates.
-2. **Cloudflare Worker** (`worker/`) — runs a `*/5 * * * *` cron. The cron is the **only** thing that talks to Reddit; HTTP requests to the Worker never trigger Reddit calls.
-3. **Workers KV** — durable edge key-value store. Holds `state` (internal) and `data` (page-facing). State persists across cron ticks; that's how we accumulate scan coverage on huge threads.
-4. **Cloudflare edge cache** — `/data.json` is served with `cache-control: public, max-age=290, s-maxage=290`. Cloudflare's edge in each PoP caches the response for ~5 min. The Worker is invoked at most **once per region per cron interval**, regardless of audience size. Sharing the page widely costs effectively nothing.
-5. **Hourly state backup** — a GitHub Action pulls `/state.json` and commits `backups/state.json` so the full state survives even if KV is wiped.
+1. **Cloudflare Worker** (`worker/`) — runs a `*/5 * * * *` cron. The cron is the **only** thing that talks to Reddit. The Worker holds `state` (internal accumulator) and `data` (page-facing JSON) in Workers KV.
+2. **Sync GitHub Action** (`.github/workflows/sync-from-worker.yml`) — runs every 5 min. Pulls `/data.json` and `/state.json` from the Worker, writes them to `public/data.json` and `backups/state.json` respectively, commits if either changed. **This is what makes the site survivable without Cloudflare** — the data lives in the repo.
+3. **Deploy workflow** (`.github/workflows/update.yml`) — fires on every push that touches `public/**`. Uploads `public/` to GitHub Pages.
+4. **GitHub Pages site** (`public/`) — a fully static page. On load, it does **one** `fetch('./data.json')` against the same origin. No live dependency on the Worker, no polling. Visitors must reload to see updates.
+5. **Worker is replaceable** — if Cloudflare disappears, the page keeps working with the last committed `data.json`. The cron + scrape logic could be moved elsewhere (Fly.io, a home server, anything that can reach Reddit) and the Action's `curl` URL pointed at the new endpoint.
 
 ### Why this shape
 
-- Reddit blocks GitHub Actions runner IPs (HTTP 403). Cloudflare's IPs aren't blocked, so the cron has to live there.
-- Reddit's anonymous rate limit (~10 req/min) means we have to budget Reddit calls carefully. Decoupling page traffic from Reddit traffic via KV + edge cache lets the page absorb arbitrary load while Reddit only ever sees the cron.
-- Persistent state in KV means we converge to full coverage over many cron ticks instead of having to fit a 4,300-comment scan into a single 30-second window.
-
-### Why a Worker (and not just GitHub Actions)
-
-Reddit returns HTTP 403 to GitHub Actions runner IPs, so anonymous fetches from there don't work. Cloudflare's edge IPs aren't blocked. A Worker also gives us persistent state between runs, so we can scan a 4,000-comment thread incrementally instead of trying to fit it inside a single 30-second window.
-
-### Where the data is saved
-
-In Cloudflare Workers KV, namespace `IMGUR_KV` (id `8dbddb7408e543828a0fad2ff2e99339`), under two keys:
-
-- **`state`** — internal: per-thread `seen_ids`, the imgur entries collected so far, the queue of unfinished `morechildren` batches, and the last-tick timestamp. The cron reads this, augments it, writes it back.
-- **`data`** — public-facing: stripped-down JSON the page reads from `GET /data.json`. Contains entries, comment counts, and `backfill_pending`.
-
-KV values are replicated across Cloudflare's edge and survive restarts/deploys. Free tier comfortably covers our usage (~288 writes/day, well under the 1k/day limit). The 1k/day write limit is the binding constraint on cron frequency: each tick writes 2 keys, so the absolute maximum is ~500 ticks/day (every 3 min). The 5-min schedule was chosen to leave headroom.
-
-As a belt-and-braces measure against KV loss, the full `state` is also mirrored to `backups/state.json` in this repo by an hourly GitHub Action — see [State backup](#state-backup) below.
+- **Reddit blocks GitHub Actions runner IPs** (HTTP 403). Cloudflare's IPs aren't blocked, so the Reddit-facing scraper has to live there.
+- **Reddit's anonymous rate limit is ~10 req/min.** A single page-load worth of recursive `morechildren` expansion can exceed that, so we don't expose page reads to Reddit at all — the scrape is decoupled from page traffic.
+- **Persistent state** in KV means we converge to full coverage of huge threads (4k+ comments) over many cron ticks instead of trying to fit a 30-second-budget scan into a single request.
+- **Data in the repo** means: free static hosting (GitHub Pages), git history of every state, no live dependency on Cloudflare from the visitor's browser, easy disaster recovery.
 
 ### How a cron tick works
 
@@ -76,6 +66,14 @@ For each thread in `public/threads.json`:
 
 Net effect: a fresh thread converges to 100% comment coverage over ~1 hour of cron ticks. Once converged, each tick is essentially free — just the incremental check.
 
+### Where the data is saved
+
+- **`public/data.json`** — committed to the repo by the sync workflow every 5 min. This is what the page actually reads. **Source of truth from the visitor's perspective.**
+- **`backups/state.json`** — committed alongside; full internal state, used to restore KV if needed.
+- **Cloudflare Workers KV**, namespace `IMGUR_KV` (id `8dbddb7408e543828a0fad2ff2e99339`) — under keys `data` and `state`. The cron writes here; the sync workflow reads from here. Considered transient — losable.
+
+KV write budget on the free tier (1k/day) caps cron frequency at ~500 ticks/day; 288/day at 5-min is well under.
+
 ## Repo layout
 
 ```
@@ -83,25 +81,26 @@ strongman-imgur/
 ├── public/                    GitHub Pages root
 │   ├── index.html
 │   ├── style.css
-│   ├── app.js                 fetches WORKER_URL/data.json, renders
-│   └── threads.json           curated list of threads to scrape
+│   ├── app.js                 fetches ./data.json, renders
+│   ├── threads.json           curated list of threads to scrape
+│   └── data.json              committed every 5 min by sync workflow
 ├── worker/                    Cloudflare Worker source
 │   ├── src/index.js           cron + HTTP handlers
 │   └── wrangler.toml          worker config (cron, KV binding)
 ├── backups/
-│   └── state.json             hourly snapshot of KV `state` (auto-committed)
+│   └── state.json             committed every 5 min; full state for KV restore
 └── .github/workflows/
     ├── update.yml             GH Pages deploy on push to public/
-    └── backup-state.yml       hourly state snapshot to backups/
+    └── sync-from-worker.yml   pulls Worker JSON and commits every 5 min
 ```
 
 ## Worker endpoints
 
-- `GET /data.json` — returns the cached output for the page. CORS open. Cached at the edge for 30s.
-- `GET /state.json` — returns the full internal state JSON. Used by the hourly backup workflow.
-- `GET /trigger` — runs a tick immediately (manual seed/refresh). Useful after deploying changes.
-- `GET /reset` — wipes both KV keys. Use only for debugging.
-- `GET /` — friendly status banner.
+- `GET /data.json` — page-facing JSON. Read by the sync workflow.
+- `GET /state.json` — full internal state. Read by the sync workflow.
+- `GET /trigger` — runs a tick immediately (manual seed/refresh). Use sparingly — each call makes ~30 Reddit requests and risks 429s on the shared CF egress.
+- `GET /reset` — wipes both KV keys. Debugging only.
+- `GET /` — status banner.
 
 ## Operations
 
@@ -117,7 +116,7 @@ Edit `public/threads.json` and append:
 }
 ```
 
-The `id` is the alphanumeric segment after `/comments/` in the URL. Push to `main`. The Worker fetches `threads.json` from the live Pages URL on every cron tick, so the next tick (≤5 min later) will start scanning the new thread. No Worker redeploy needed.
+Push to `main`. The Worker fetches `threads.json` from the live Pages URL on every cron tick, so the next tick (≤5 min later) will start scanning the new thread. No Worker redeploy needed.
 
 ### Update the Worker
 
@@ -134,7 +133,7 @@ If the schema of the persisted `state` changes, hit `https://strongman-imgur.ako
 python3 -m http.server -d public 8080
 ```
 
-Then open http://localhost:8080. The page will hit the live Worker for data — no local Worker needed for UI work.
+Then open http://localhost:8080. Reads the committed `public/data.json` directly.
 
 ### Local Worker development
 
@@ -145,31 +144,24 @@ wrangler dev
 
 Spins up a local edge runtime with KV emulation. Hit `http://localhost:8787/trigger` to test.
 
-### State backup
+### Restore KV from backup
 
-`.github/workflows/backup-state.yml` runs every hour at minute `:17` (and on manual dispatch). It does:
-
-1. `curl https://strongman-imgur.akotzias-dev.workers.dev/state.json` → pretty-prints the JSON → writes to `backups/state.json`.
-2. Stages the file, commits only if the contents changed, pushes.
-
-The `update.yml` deploy workflow has `paths: ["public/**", ".github/workflows/update.yml"]`, so backup commits don't trigger a Pages redeploy.
-
-**To restore** the Worker's KV from the backup (if KV is ever wiped):
+If KV is ever wiped:
 
 ```sh
 cd worker
 wrangler kv key put --binding=IMGUR_KV state "$(cat ../backups/state.json)"
 ```
 
-Then hit `/trigger` to regenerate the public-facing `data` key from the restored `state`.
+Then hit `/trigger` to regenerate `data` from `state`.
 
-**To trigger a backup manually** (e.g. before doing something risky):
+### Trigger sync manually
 
 ```sh
-gh workflow run backup-state.yml --repo akotzias/strongman-imgur
+gh workflow run sync-from-worker.yml --repo akotzias/strongman-imgur
 ```
 
 ## Deploy
 
-- **Page**: pushing to `main` triggers `.github/workflows/update.yml`, which uploads `public/` to GitHub Pages.
+- **Page**: pushing to `main` (with changes under `public/**`) triggers `.github/workflows/update.yml`, which uploads `public/` to GitHub Pages. Sync commits to `public/data.json` re-trigger this — that's how new data lands on the site.
 - **Worker**: deployed manually with `wrangler deploy` from `worker/`. Cron tick is `*/5 * * * *`. Cloudflare account: `akotzias-dev`.
