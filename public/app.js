@@ -36,11 +36,14 @@ function scanStatus(t) {
   const n = t.entries.length;
   const noun = n === 1 ? "imgur post" : "imgur posts";
   const fmt = (x) => x.toLocaleString();
-  if (t.backfill_pending && t.total_comments_reported) {
-    const pct = Math.round((t.total_comments_loaded / t.total_comments_reported) * 100);
-    return `${n} ${noun} · ${pct}% scanned (${fmt(t.total_comments_loaded)} out of ${fmt(t.total_comments_reported)} comments) — older comments may still be missing.`;
+  const loaded = t.total_comments_loaded;
+  const reported = t.total_comments_reported;
+  const fullyScanned = !t.backfill_pending || (reported && loaded >= reported);
+  if (!fullyScanned && reported) {
+    const pct = Math.min(100, Math.round((loaded / reported) * 100));
+    return `${n} ${noun} · ${pct}% scanned (${fmt(loaded)} out of ${fmt(reported)} comments) — older comments may still be missing.`;
   }
-  return `${n} ${noun} · all ${fmt(t.total_comments_loaded)} comments scanned.`;
+  return `${n} ${noun} · all ${fmt(loaded)} comments scanned.`;
 }
 
 function renderEntry(e) {
